@@ -442,6 +442,39 @@ func (xsk *Socket) Receive(num int) []Desc {
 	return descs
 }
 
+// Returns next num filled descriptors, without freeing
+func (xsk *Socket) GetFilled(num int) []Desc {
+	numAvailable := xsk.NumReceived()
+	if num > int(numAvailable) {
+		num = int(numAvailable)
+	}
+
+	descs := xsk.rxDescs[:0]
+	cons := *xsk.rxRing.Consumer
+	for i := 0; i < num; i++ {
+		descs = append(descs, xsk.rxRing.Descs[cons&uint32(xsk.options.RxRingNumDescs-1)])
+		cons++
+	}
+	return descs
+}
+
+// Free next num Rx Descs.
+func (xsk *Socket) FreeFilled(num int) {
+	numAvailable := xsk.NumReceived()
+	if num > int(numAvailable) {
+		num = int(numAvailable)
+	}
+	cons := *xsk.rxRing.Consumer
+	var desc Desc
+	for i := 0; i < num; i++ {
+		desc = xsk.rxRing.Descs[cons&uint32(xsk.options.RxRingNumDescs-1)]
+		cons++
+		xsk.freeRXDescs[desc.Addr/uint64(xsk.options.FrameSize)] = true
+	}
+	*xsk.rxRing.Consumer = cons
+	xsk.numFilled -= num
+}
+
 // Transmit submits the given descriptors to be sent out, it returns how many
 // descriptors were actually pushed onto the Tx ring queue.
 // The descriptors can be acquired either by calling the GetDescs() method or
@@ -654,7 +687,13 @@ func (xsk *Socket) NumFreeFillSlots() int {
 	cons := *xsk.fillRing.Consumer
 	max := uint32(xsk.options.FillRingNumDescs)
 
-	n := max - (prod - cons)
+	var n uint32
+	if  cons > prod {
+		n = max - (cons - prod)
+	} else {
+		n = max - (prod - cons)
+	}
+
 	if n > max {
 		n = max
 	}
@@ -685,7 +724,11 @@ func (xsk *Socket) NumReceived() int {
 	cons := *xsk.rxRing.Consumer
 	max := uint32(xsk.options.RxRingNumDescs)
 
-	n := prod - cons
+	var n uint32 = prod - cons
+	if cons > prod {
+		fmt.Printf("Received Consumer > Producer\n")
+		n = max - cons + prod
+	}
 	if n > max {
 		n = max
 	}
